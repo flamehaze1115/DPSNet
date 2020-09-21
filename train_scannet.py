@@ -19,7 +19,7 @@ from loss_functions import compute_errors_train
 from logger import TermLogger, AverageMeter
 from itertools import chain
 from tensorboardX import SummaryWriter
-from sequence_folders import SequenceFolder
+from scannet import ScannetDataset
 
 parser = argparse.ArgumentParser(description='Structure from Motion Learner training on KITTI and CityScapes Dataset',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -58,13 +58,17 @@ parser.add_argument('--log-full', default='progress_log_full.csv', metavar='PATH
                     help='csv where to save per-gradient descent train stats')
 parser.add_argument('--log-output', action='store_true',
                     help='will log dispnet outputs and warped imgs at validation step')
-parser.add_argument('--ttype', default='train.txt', type=str, help='Text file indicates input data')
+parser.add_argument('--trainlist', default='./dataset/scannet/train_split.txt', type=str,
+                    help='Text file indicates input data')
 parser.add_argument('--ttype2', default='val.txt', type=str, help='Text file indicates input data')
 parser.add_argument('-f', '--training-output-freq', type=int,
                     help='frequence for outputting dispnet outputs and warped imgs at training for all scales if 0 will not output',
                     metavar='N', default=100)
 parser.add_argument('--nlabel', type=int, default=64, help='number of label')
-parser.add_argument('--mindepth', type=float, default=0.5, help='minimum depth')
+parser.add_argument('--mindepth', type=float, default=0.2, help='minimum depth')
+
+parser.add_argument('--seq_len', default=3, type=int,
+                    help='the length of video sequence')
 
 n_iter = 0
 
@@ -93,29 +97,16 @@ def main():
         normalize
     ])
 
-    valid_transform = custom_transforms.Compose([custom_transforms.ArrayToTensor(), normalize])
-
     print("=> fetching scenes in '{}'".format(args.data))
-    train_set = SequenceFolder(
-        args.data,
-        transform=train_transform,
-        seed=args.seed,
-        ttype=args.ttype
-    )
-    val_set = SequenceFolder(
-        args.data,
-        transform=valid_transform,
-        seed=args.seed,
-        ttype=args.ttype2
-    )
+    train_set = ScannetDataset(args.data, args.trainlist,
+                               mode='train',
+                               n_frames=args.seq_len,
+                               r=args.seq_len * 2,
+                               transform=train_transform)
 
     print('{} samples found in {} train scenes'.format(len(train_set), len(train_set.scenes)))
-    print('{} samples found in {} valid scenes'.format(len(val_set), len(val_set.scenes)))
     train_loader = torch.utils.data.DataLoader(
         train_set, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.workers, pin_memory=True)
-    val_loader = torch.utils.data.DataLoader(
-        val_set, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
     if args.epoch_size == 0:
@@ -156,15 +147,8 @@ def main():
 
         # train for one epoch
         train_loss = train(args, train_loader, dpsnet, optimizer, args.epoch_size, training_writer)
-        errors, error_names = validate_with_gt(args, val_loader, dpsnet, epoch, output_writers)
-
-        error_string = ', '.join('{} : {:.3f}'.format(name, error) for name, error in zip(error_names, errors))
-
-        for error, name in zip(errors, error_names):
-            training_writer.add_scalar(name, error, epoch)
 
         # Up to you to chose the most relevant error to measure your model's performance, careful some measures are to maximize (such as a1,a2,a3)
-        decisive_error = errors[0]
         save_checkpoint(
             args.save_path, {
                 'epoch': epoch + 1,
@@ -174,7 +158,7 @@ def main():
 
         with open(args.save_path / args.log_summary, 'a') as csvfile:
             writer = csv.writer(csvfile, delimiter='\t')
-            writer.writerow([train_loss, decisive_error])
+            writer.writerow([train_loss])
 
 
 def train(args, train_loader, dpsnet, optimizer, epoch_size, train_writer):
@@ -203,7 +187,7 @@ def train(args, train_loader, dpsnet, optimizer, epoch_size, train_writer):
 
         # get mask
         mask = (tgt_depth_var <= args.nlabel * args.mindepth) & (tgt_depth_var >= args.mindepth) & (
-                    tgt_depth_var == tgt_depth_var)
+                tgt_depth_var == tgt_depth_var)
         mask.detach_()
 
         depths = dpsnet(tgt_img_var, ref_imgs_var, pose, intrinsics_var, intrinsics_inv_var)

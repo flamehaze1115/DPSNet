@@ -51,7 +51,7 @@ class RandomScaleCrop(object):
         assert intrinsics is not None
         output_intrinsics = np.copy(intrinsics)
 
-        out_h = 240
+        out_h = 256
         out_w = 320
         in_h, in_w, _ = images[0].shape
         x_scaling = np.random.uniform(out_w/in_w, 1)
