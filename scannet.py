@@ -173,6 +173,75 @@ class ScannetDataset(data.Dataset):
 
         return images, poses, depths, dmasks, frameid, images_paths, data_blob['scene']
 
+    def read_sample_test(self, index):
+        data_blob = self.dataset_index[index]
+        num_frames = data_blob['n_frames']
+        num_samples = self.n_frames - 1
+
+        frameid = data_blob['id']
+
+        inds = [i for i in range(self.n_frames)]  # the middle three should be target images
+
+        images = []
+        images_paths = []
+        img_ids = []
+        for i in inds:
+            image = cv2.imread(data_blob['images'][i])
+
+            img_id = re.findall(r'\d+', os.path.basename(data_blob['images'][i]))
+            img_ids.append(img_id)
+
+            images_paths.append(data_blob['images'][i])
+
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            images.append(image)
+
+        poses = []
+        poses_paths = []
+        pose_ids = []
+        for i in inds:
+            pose = np.loadtxt(data_blob['poses'][i], delimiter=' ').astype(np.float32)
+
+            pose_id = re.findall(r'\d+', os.path.basename(data_blob['poses'][i]))
+            pose_ids.append(pose_id)
+
+            poses.append(pose)
+            poses_paths.append(data_blob['poses'][i])
+
+        depths = []
+        dmasks = []
+        depths_paths = []
+        depth_ids = []
+        for i in inds:
+            depth = cv2.imread(data_blob['depths'][i], cv2.IMREAD_ANYDEPTH)
+
+            depth_id = re.findall(r'\d+', os.path.basename(data_blob['depths'][i]))
+            depth_ids.append(depth_id)
+
+            depth = (depth.astype(np.float32)) / 1000.0
+
+            dmask = (depth >= self.depth_min) & (depth <= self.depth_max) & (np.isfinite(depth))
+            depth[~dmask] = 0
+
+            ratio = np.sum(np.float32(dmask)) / (self.width * self.height)
+
+            assert ratio > 0.5
+
+            depths.append(depth)
+            dmasks.append(dmask)
+            depths_paths.append(data_blob['depths'][i])
+
+        images = np.stack(images, axis=0).astype(np.float32)
+        poses = np.stack(poses, axis=0).astype(np.float32)
+
+        assert np.all(np.isfinite(poses))
+        assert (img_ids == pose_ids) & (img_ids == depth_ids)
+
+        depths = np.stack(depths, axis=0).astype(np.float32)
+        dmasks = np.stack(dmasks, axis=0)
+
+        return images, poses, depths, dmasks, frameid, images_paths, data_blob['scene']
+
     def split_tgt_ref(self, images, poses, depths, dmasks, images_paths):
         """
         here reference image means source images
@@ -198,9 +267,10 @@ class ScannetDataset(data.Dataset):
         flag = True
         while flag:
             try:
-
-                images, poses, depths, dmasks, frameid, images_paths, scene = self.read_sample_train(index)
-
+                if self.mode == "train":
+                    images, poses, depths, dmasks, frameid, images_paths, scene = self.read_sample_train(index)
+                elif self.mode == "test":
+                    images, poses, depths, dmasks, frameid, images_paths, scene = self.read_sample_test(index)
                 flag = False
             except:
 
@@ -297,6 +367,31 @@ class ScannetDataset(data.Dataset):
                 training_example['images'] = images[i - r:i + r + 1]
                 training_example['poses'] = poses[i - r:i + r + 1]
                 training_example['n_frames'] = 2 * r + 1
+                training_example['id'] = data_id
+                training_example['scene'] = scan
+
+                self.dataset_index.append(training_example)
+                data_id += 1
+
+    def build_dataset_index_test(self):
+        self.dataset_index = []
+        data_id = 0
+
+        for scan in self.scenes:
+
+            scanid = int(re.findall(r'scene(.+?)_', scan)[0])
+
+            scene_info = self._load_scan(scan, interval=10, if_dump=False)
+            images = scene_info["images"]
+            depths = scene_info["depths"]
+            poses = scene_info["poses"]
+
+            for i in range(0, len(images) - self.n_frames, 1):
+                training_example = {}
+                training_example['depths'] = depths[i: i + self.n_frames + 1]
+                training_example['images'] = images[i: i + self.n_frames + 1]
+                training_example['poses'] = poses[i: i + self.n_frames + 1]
+                training_example['n_frames'] = self.n_frames
                 training_example['id'] = data_id
                 training_example['scene'] = scan
 
